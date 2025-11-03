@@ -1,37 +1,25 @@
 from utils import lm
 
+class MoST:
+    class planner:
+        def __init__(self, provider="gemini"):
+            self.provider = provider
+            with open("prompts/u_lm.md", "r") as f:
+                self.system_prompt = f.read()
+            self.messages = [{"role": "system", "content": self.system_prompt}]
 
-# Optional system prompt (empty by default)
-system = ""
 
+    class MetaAgent:
+        def __init__(self, provider="gemini"):
+            self.provider = provider
+            with open("prompts/meta_agent.md", "r") as f:
+                self.system_prompt = f.read()
+            self.messages = [{"role": "system", "content": self.system_prompt}]
 
-# Initial message list
-messages = [{"role": "system", "content": system}]
-
-
-if __name__ == "__main__":
-    while True:
-        try:
-            prompt = input("> ")
-
-            if prompt.lower() in (":help", ":?"):
-                print(
-                    "Commands:\n"
-                    "  :help or :?   Show this help message\n"
-                    "  :exit or :quit  Exit the chat"
-                )
-                continue
-
-            if prompt.lower() in (":exit", ":quit"):
-                print("Exiting...")
-                break
-
-            messages.append({"role": "user", "content": prompt})
-            response = lm.chat(messages, provider="groq")
-            messages.append({"role": "assistant", "content": response})
-
-            print(response)
-
-        except KeyboardInterrupt:
-            print("\nExiting...")
-            break
+        def agent(self, user_input: str) -> str:
+            self.messages.append({"role": "user", "content": user_input})
+            response = lm.chat(self.messages, provider=self.provider)
+            self.messages.append(
+                {"role": "assistant", "content": response}
+            )
+            return response
