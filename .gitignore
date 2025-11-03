@@ -1,0 +1,35 @@
+# Python cache & build
+__pycache__/
+*.py[co]
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Environment & secrets
+.env
+*.local
+*.secret
+
+# IDEs / Editors
+.vscode/
+.idea/
+.history/
+
+# macOS
+.DS_Store
+
+# Testing / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+logs/
+
+# Miscellaneous
+paper.md
