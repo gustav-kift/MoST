@@ -21,7 +21,7 @@ logger.addHandler(ch)
 colourama.init()
 
 
-messages = [{"role": "user", "content": "How many r's does the word strawberry have?"}]
+messages = [{"role": "user", "content": "A farmer has a wolf, a goat, and a cabbage. He needs to get them all across a river using a small boat that can only carry him and one other item at a time. The wolf will eat the goat if they are left alone, and the goat will eat the cabbage if they are left alone. How can the farmer transport everything across the river??"}]
 thought_messages = []
 
 
@@ -114,8 +114,6 @@ def r_lm():
 
 def meta_agent():
     pass
-
-
 
 def main():
     plans = planner()
