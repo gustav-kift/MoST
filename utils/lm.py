@@ -1,97 +1,57 @@
-from dotenv import load_dotenv
-import os
+from dotenv import load_dotenv, get_key
 from openai import OpenAI
 
 try:
-    from utils import load_config
+    from utils import load_config  # package context
 except ImportError:
-    import load_config
+    import load_config  # direct run context
 
 
-# ================================
-# LOAD .env + CONFIG
-# ================================
+# --- Load .env and config file once at import ---
 load_dotenv()
 config = load_config.load_config()
 
 
-# ================================
-# PROVIDER CREDENTIAL HANDLING
-# ================================
+# --- Credential selector ---
 def get_creds(provider: str | None = None):
     """
-    Returns (base_url, model, api_key)
-    - Ollama uses a dummy API key
-    - Other providers require real API keys from .env
+    Reads base_url, model, and API key for a given provider.
+    Falls back to the default provider in [general].
     """
-
-    provider = provider or config["general"]["provider"]
-
+    provider = provider or config["general"].get("provider")
     if provider not in config:
-        raise ValueError(f"Unknown provider '{provider}' in config.ini")
+        raise ValueError(f"Provider '{provider}' not found in config.ini")
 
     base_url = config[provider].get("base_url")
     model = config[provider].get("model")
 
-    # ✅ Providers that DO NOT require API keys -> give dummy key
-    if provider.lower() == "ollama":
-        return base_url, model, "ollama"
-
-    # ✅ Others need real API keys from .env
-    key_name = f"{provider.upper()}_API_KEY"
-    api_key = os.getenv(key_name)
+    # Derive env var name, e.g. GROQ_API_KEY
+    key_name = config[provider].get("api_key")
+    api_key = get_key(".env", key_name)
 
     if not api_key:
-        raise EnvironmentError(
-            f"Missing {key_name} in your .env file.\n"
-            f"Add: {key_name}=your_key_here"
-        )
+        raise EnvironmentError(f"Missing {key_name} in .env file")
 
     return base_url, model, api_key
 
 
-# ================================
-# CREATE CLIENT
-# ================================
-def create_client(provider=None):
-    base_url, model, api_key = get_creds(provider)
-    client = OpenAI(base_url=base_url, api_key=api_key)
-    return client, model
+# --- Persistent default client ---
+_base_url, _model, _api_key = get_creds()
+_client = OpenAI(base_url=_base_url, api_key=_api_key)
 
 
-# ✅ Load default provider (like ollama)
-_default_client, _default_model = create_client()
-
-
-# ================================
-# CHAT COMPLETION WRAPPER
-# ================================
-def chat(messages, model: str | None = None, provider: str | None = None, print_thoughts=False):
+# --- Chat helper ---
+def chat(messages, model: str | None = None, provider: str | None = None):
     """
-    Unified chat wrapper supporting:
-    - all providers in config.ini
-    - dynamic model/provider override
-    - optional debug output
+    Perform a chat completion against the configured provider.
+    You can override provider or model per call.
     """
+    client = _client
+    model = model or _model
 
     if provider:
-        client, default_model = create_client(provider)
-    else:
-        client, default_model = _default_client, _default_model
+        base_url, model, api_key = get_creds(provider)
+        client = OpenAI(base_url=base_url, api_key=api_key)
 
-    model = model or default_model
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.2,
-    )
-
-    content = response.choices[0].message.content
-
-    if print_thoughts:
-        print("\n🧠 MODEL OUTPUT ===============================")
-        print(content)
-        print("==============================================\n", flush=True)
-
-    return content
+    response = client.chat.completions.create(model=model, messages=messages)
+    return response.choices[0].message.content

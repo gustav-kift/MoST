@@ -8,4 +8,6 @@ dependencies = [
     "colorama>=0.4.6",
     "dotenv>=0.9.9",
     "openai>=2.6.1",
+    "sentence-transformers>=5.1.2",
+    "streamlit>=1.51.0",
 ]

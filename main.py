@@ -1,229 +1,138 @@
-from utils import lm, clean_output, loading
+from utils import lm, loading
+from utils.clean_output import clean_model_output as clean_output
+from utils.colourized_logs import ColorFormatter
+import colorama as colourama
+import logging
+import json
+import ast  # safe literal parser
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+formatter = ColorFormatter("%(asctime)s | %(levelname)s | %(message)s")
+ch.setFormatter(formatter)
+
+logger.addHandler(ch)
 
 
-class MoST:
-    """Main MoST class providing modular planning and response functionality."""
-
-    # ==========================================================
-    #  PLANNER COMPONENT
-    # ==========================================================
-    class Planner:
-        def __init__(self):
-            with open("prompts/planner/planner.md", "r", encoding="utf-8") as f:
-                self.planner_system_prompt = f.read()
-
-            with open("prompts/planner/get_intent.md", "r", encoding="utf-8") as f:
-                self.intent_system_prompt = f.read()
-
-            self.planner_messages = [
-                {"role": "system", "content": self.planner_system_prompt}
-            ]
-
-        class GetIntent:
-            def __init__(self, parent, user_input: str):
-                self.parent = parent
-                self.user_input = user_input
-                self.intent_system_prompt = parent.intent_system_prompt
-                self.intent_messages = [
-                    {"role": "system", "content": self.intent_system_prompt}
-                ]
-
-            def get(self) -> str:
-                messages = self.intent_messages + [
-                    {"role": "user", "content": self.user_input}
-                ]
-                return lm.chat(messages, print_thoughts=True)
-
-        def plan(self, user_input: str, user_intent: str):
-            messages = self.planner_messages + [
-                {
-                    "role": "user",
-                    "content": f"User Input: {user_input}\nUser Intent: {user_intent}",
-                }
-            ]
-            response = lm.chat(messages, print_thoughts=True)
-            return clean_output.clean_model_output(response)
-
-    # ==========================================================
-    # USER-LM
-    # ==========================================================
-    class UserLM:
-        def __init__(self):
-            with open("prompts/u_lm/u_lm.md", "r", encoding="utf-8") as f:
-                self.u_system_prompt = f.read()
-
-            self.u_messages = [{"role": "system", "content": self.u_system_prompt}]
-
-        def query(self, payload: dict, print_thoughts=False) -> str:
-            messages = self.u_messages + [
-                {"role": "user", "content": f"{payload}"}
-            ]
-            return lm.chat(messages, print_thoughts=print_thoughts)
-
-    # ==========================================================
-    # RESPONSE-LM
-    # ==========================================================
-    class ResponseLM:
-        def __init__(self):
-            with open("prompts/r_lm/r_lm.md", "r", encoding="utf-8") as f:
-                self.r_system_prompt = f.read()
-
-            self.r_messages = [{"role": "system", "content": self.r_system_prompt}]
-
-        def respond(self, content: str, print_thoughts=False) -> str:
-            messages = self.r_messages + [
-                {"role": "user", "content": content}
-            ]
-            return lm.chat(messages, print_thoughts=print_thoughts)
-
-    # ==========================================================
-    # META-AGENT
-    # ==========================================================
-    class MetaAgent:
-        def __init__(self, plan: dict, steps: list):
-            self.plan = plan
-            self.steps = steps
-
-            with open("prompts/meta_agent/meta_agent.md", "r", encoding="utf-8") as f:
-                self.meta_system_prompt = f.read()
-
-            self.meta_messages = [{"role": "system", "content": self.meta_system_prompt}]
-
-        def assess(self):
-            messages = self.meta_messages + [
-                {"role": "user", "content": str(self.steps)}
-            ]
-            return lm.chat(messages, print_thoughts=True)
-
-    # ==========================================================
-    # EXECUTION ORCHESTRATOR (MAIN PIPELINE)
-    # ==========================================================
-    class Execute:
-        def __init__(self):
-            self.planner = MoST.Planner()
-            self.user_lm = MoST.UserLM()
-            self.response_lm = MoST.ResponseLM()
-
-        def run(self, user_input: str):
-            history = []
-
-            print("\n=== INTENT EXTRACTION ===")
-            intent = self.planner.GetIntent(self.planner, user_input).get()
-            history.append(("intent", intent))
-
-            print("\n=== PLAN GENERATION ===")
-            plan_raw = self.planner.plan(user_input, intent)
-            history.append(("plan_raw", plan_raw))
-
-            import json
-
-            # ✅ Already a dict? Use it directly.
-            if isinstance(plan_raw, dict):
-                plan = plan_raw
-
-            # ✅ If it's a JSON string, parse it.
-            else:
-                try:
-                    plan = json.loads(plan_raw)
-                except Exception:
-                    # ✅ Try extracting the JSON inside ```json``` blocks
-                    import re
-                    match = re.search(r"```json\s*(\{.*?\})\s*```", plan_raw, re.DOTALL)
-                    if match:
-                        plan = json.loads(match.group(1))
-                    else:
-                        raise ValueError("Planner did not return valid JSON.")
-
-            print("\n=== EXECUTING PLAN STEP-BY-STEP ===")
-
-            state = {}
-            step_results = []
-
-            for step in plan["steps"]:
-                step_id = step["id"]
-                step_desc = step["description"]
-
-                print(f"\n━━━━━━━━━━ STEP {step_id}: {step_desc} ━━━━━━━━━━")
-
-                # ---------- U-LM ----------
-                u_payload = {
-                    "step_id": step_id,
-                    "step_description": step_desc,
-                    "state": state,
-                    "full_plan": plan,
-                    "history": step_results,
-                }
-
-                u_out = self.user_lm.query(u_payload, print_thoughts=True)
-                clean_u = clean_output.clean_model_output(u_out)
-
-                # try extracting state from JSON block
-                try:
-                    parsed = json.loads(clean_u)
-                    if "state_update" in parsed:
-                        print("📌 STATE UPDATE:", parsed["state_update"])
-                        state.update(parsed["state_update"])
-                except:
-                    pass
-
-                # ---------- R-LM ----------
-                # ---------- R-LM ----------
-                import json
-
-                safe_input = clean_u
-                if not isinstance(safe_input, str):
-                    safe_input = json.dumps(safe_input, indent=2)
-
-                r_out = self.response_lm.respond(safe_input, print_thoughts=True)
+colourama.init()
 
 
-                step_results.append({
-                    "step_id": step_id,
-                    "description": step_desc,
-                    "u_lm": clean_u,
-                    "r_lm": r_out,
-                    "state": dict(state),
-                })
-
-            print("\n=== META-AGENT EVALUATION ===")
-            meta = MoST.MetaAgent(plan, step_results)
-            meta_decision = meta.assess()
-
-            print("\n=== FINAL ANSWER SYNTHESIS ===")
-            all_r = "\n".join([s["r_lm"] for s in step_results])
-            final_answer = self.response_lm.respond(all_r, print_thoughts=True)
-
-            return {
-                "intent": intent,
-                "plan": plan,
-                "steps": step_results,
-                "meta_decision": meta_decision,
-                "final_answer": final_answer,
-                "history": history,
-            }
+messages = [{"role": "user", "content": "How many r's does the word strawberry have?"}]
+thought_messages = []
 
 
-# ==============================================================
-# MAIN EXECUTION
-# ==============================================================
+planner_path = "prompts/planner/planner.md" # Path to the planner system prompt
+u_lm_path = "prompts/u_lm/u_lm.md" # Path to the user LM system prompt
+r_lm_path = "prompts/r_lm/r_lm.md" # Path to the response LM system prompt
+meta_agent_path = "prompts/meta_agent/meta_agent.md" # Path to the meta-agent system prompt
+
+
+def planner():
+    logger.info("Loading planner system prompt")
+    with open(planner_path, "r") as f:
+        planner_system_prompt = f.read()
+
+    planner_messages = [
+        {"role": "system", "content": planner_system_prompt},
+        *messages
+    ]
+
+    logger.info("Requesting plan from model")
+    planner_response = lm.chat(planner_messages)
+
+    # Model returned dict directly
+    if isinstance(planner_response, dict):
+        logger.debug("Received native dict response from model")
+        return planner_response
+
+    raw_text = planner_response
+    logger.debug("Raw model output: %s", raw_text)
+
+    # Clean code fences
+    if "```" in raw_text:
+        logger.debug("Cleaning code fences from model output")
+        raw_text = clean_output(raw_text)
+
+    logger.debug("Cleaned output: %s", raw_text)
+
+    # If clean_output returned a dict
+    if isinstance(raw_text, dict):
+        logger.debug("Cleaned output already parsed as dict")
+        return raw_text
+
+    logger.info("Parsing structured planner output")
+
+    # Strict JSON parse
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        logger.debug("Strict JSON parsing failed, using literal eval")
+
+    # Python dict-style parse
+    try:
+        return ast.literal_eval(raw_text)
+    except Exception as e:
+        logger.error("Failed to parse planner output: %s", e)
+        raise
+
+def u_lm(step):
+    logger.info("Loading user LM system prompt")
+    with open(u_lm_path, "r") as f:
+        u_lm_system_prompt = f.read()
+    
+    
+    u_lm_messages = [
+                        {"role": "system", "content": u_lm_system_prompt},
+                        {"role": "user", "content": f"CURENT STEP: {step}\nCURRENT THOUGHTS: {thought_messages}"}
+                    ]
+    logger.info("Requesting user LM prompt")
+
+    u_lm_response = lm.chat(u_lm_messages)
+    logger.debug("User LM response: " + u_lm_response)
+    thought_messages.append({"role": "user", "content": u_lm_response})
+    return u_lm_response
+
+def r_lm():
+    logger.info("Loading response LM system prompt")
+    with open(r_lm_path, "r") as f:
+        r_lm_system_prompt = f.read()
+    r_lm_messages = [
+                        {"role": "system", "content": r_lm_system_prompt},
+                        *thought_messages
+                    ]
+    
+    logger.info("Requesting response LM response")
+    r_lm_response = lm.chat(r_lm_messages)
+    logger.debug("Response LM output: " + r_lm_response)
+
+    thought_messages.append({"role": "assistant", "content": r_lm_response})
+    return r_lm_response
+
+def meta_agent():
+    pass
+
+
 
 def main():
-    system = MoST.Execute()
+    plans = planner()
 
-    user_query = (
-        "A red box contains three blue boxes, each blue box contains two yellow spheres. "
-        "One yellow sphere is removed from each blue box, and then two blue boxes are removed "
-        "from the red box. How many yellow spheres remain?"
-    )
-
-    result = system.run(user_query)
-
-    print("\n=== FINAL MOST OUTPUT ===")
-    print("\nINTENT:", result["intent"])
-    print("\nPLAN:", result["plan"])
-    print("\nFINAL ANSWER:", result["final_answer"])
+    for step in plans.get("steps", []):
+        u_lm(step)
+        r_lm()
+"""        u_lm_output = u_lm() # we will provide the step in the plan
+        r_lm_output = r_lm()
+        meta_agent_output = meta_agent() # Will be given the plan, the current step, and will see if we need to adjust anything."""
 
 
 if __name__ == "__main__":
-    # Remove spinner so streaming works!
-    main()
+    try:
+        main()
+    except Exception as e:
+        if Exception != KeyboardInterrupt:
+            logger.error("An error occurred: %s", e)
+        else:
+            logger.warning("Process interrupted by user")
