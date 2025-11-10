@@ -5,6 +5,8 @@ import colorama as colourama
 import logging
 import json
 import ast  # safe literal parser
+from utils.safe_parse import safe_parse_json
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -112,18 +114,110 @@ def r_lm():
     thought_messages.append({"role": "assistant", "content": r_lm_response})
     return r_lm_response
 
-def meta_agent():
-    pass
+def meta_agent(plan, step, thought_messages):
+    logger.info("Loading meta-agent system prompt")
+    with open(meta_agent_path, "r") as f:
+        meta_system_prompt = f.read()
+
+    meta_input = {
+        "plan": plan,
+        "current_step": step,
+        "history": thought_messages[-10:],  # keep it short
+        "latest_user": thought_messages[-2] if len(thought_messages) >= 2 else None,
+        "latest_assistant": thought_messages[-1] if len(thought_messages) >= 1 else None,
+    }
+
+    meta_messages = [
+        {"role": "system", "content": meta_system_prompt},
+        {"role": "user", "content": json.dumps(meta_input)}
+    ]
+
+    logger.info("Requesting meta-agent judgement")
+    raw = lm.chat(meta_messages)
+    logger.debug("Raw meta-agent output: %s", raw)
+
+    try:
+        parsed = safe_parse_json(raw)
+    except Exception as e:
+        logger.error("Meta-agent parse failed: %s", e)
+        # default to retry but also nudge U-LM to re-anchor
+        return {
+            "status": "retry_required",
+            "corrected_step": None,
+            "message_for_u_lm": "Re-anchor to the current step; avoid adding new entities or details."
+        }
+
+    # Guarantee keys exist
+    return {
+        "status": parsed.get("status", "retry_required"),
+        "corrected_step": parsed.get("corrected_step"),
+        "message_for_u_lm": parsed.get("message_for_u_lm"),
+    }
+
+
+
+def turn(step):
+    u_lm_output = u_lm(step)
+    r_lm_output = r_lm()
+    return [
+        {"u_lm_output": u_lm_output},
+        {"r_lm_output": r_lm_output}
+    ]
 
 def main():
-    plans = planner()
+    plan = planner()
+    steps = plan.get("steps", [])
 
-    for step in plans.get("steps", []):
-        u_lm(step)
-        r_lm()
-"""        u_lm_output = u_lm() # we will provide the step in the plan
-        r_lm_output = r_lm()
-        meta_agent_output = meta_agent() # Will be given the plan, the current step, and will see if we need to adjust anything."""
+    for step in steps:
+        logger.info(f"Starting step: {step}")
+
+        step_complete = False
+
+        while not step_complete:
+
+            # Run U-LM → R-LM turn
+            u_output = u_lm(step)
+            r_output = r_lm()
+
+            # Meta-agent decides what to do
+            meta = meta_agent(plan, step, thought_messages)
+
+            status = meta.get("status")
+
+            if status == "step_completed":
+                logger.info("Step completed successfully.")
+                step_complete = True
+
+            elif status == "retry_required":
+                logger.warning("Retrying step due to unclear or incorrect output.")
+                continue  # re-run the same step without changes
+
+            elif status == "correction_required":
+                corrected = meta.get("corrected_step")
+                message_for_u = meta.get("message_for_u_lm")
+
+                if corrected:
+                    logger.info("Applying corrected step from meta-agent")
+                    step = corrected
+
+                if message_for_u:
+                    logger.info("Meta-agent provided correction for U-LM")
+                    thought_messages.append({"role": "meta", "content": message_for_u})
+
+                continue
+
+            elif status == "off_plan":
+                logger.warning("R-LM went off plan. Re-anchoring.")
+                thought_messages.append({
+                    "role": "meta",
+                    "content": "Please stay focused on the current step only."
+                })
+                continue
+
+            else:
+                logger.error(f"Unknown meta-agent status: {status}. Retrying.")
+                continue
+
 
 
 if __name__ == "__main__":
